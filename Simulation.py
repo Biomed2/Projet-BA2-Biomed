@@ -78,7 +78,7 @@ with open('data.csv') as data:
 """
 
 symptoms = pd.read_csv("data.csv")  # Opens data.csv file
-symptoms["bat_low"] = np.where(symptoms["bat"] < 5, True, False)  # Adds a column "bat_low", True if bat < 5%
+symptoms["bat_low"] = np.where(symptoms["bat"] < 5, -1, 1)  # Adds a column "bat_low", True if bat < 5%
 
 # Determine the first column (date-time) as index
 symptoms.index = pd.to_datetime(symptoms.pop("Temps"))
@@ -117,7 +117,41 @@ alerts["disconnected"] = symptoms["disconnected"]
 
 # Fever Alerts : send an alert when the fever level changes
 symptoms["fever_diff"] = symptoms['Fievre_niveau'].diff()
-alerts["fever"] = np.where(symptoms["fever_diff"] != float(0), symptoms["Fievre_niveau"], False)
+symptoms["fever_level_alert"] = np.where(symptoms["fever_diff"] != float(0), symptoms["Fievre_niveau"], False)
+conditions = [
+    (symptoms['fever_level_alert'] == 1),
+    (symptoms['fever_level_alert'] == 2),
+    (symptoms['fever_level_alert'] == 3),
+    (symptoms['fever_level_alert'] == 4),
+]
+values = ["Température normale", "Alerte : fièvre", "Alerte : fièvre grave", "Alerte : fièvre très grave"]
+alerts['fever'] = np.select(conditions, values)
 
 # Oxymeter alerts : send an alert when the oxygen concentration decreases to less than 95%
+symptoms["oxy_low"] = np.where((symptoms["oxy"] < 95), 1, 2)
 
+symptoms["dyspnea"] = symptoms["oxy_low"].diff()
+conditions = [
+    (symptoms['dyspnea'] == -1),
+    (symptoms['dyspnea'] == 1)
+]
+values = ["Alerte : taux d'oxygène bas", "Taux d'oxygène normalisé"]
+alerts['dyspnea'] = np.select(conditions, values)
+print(symptoms.to_string())
+print(alerts.to_string())
+
+# BPM alerts : send an alert when the heartbeats per minute are higher than 100
+symptoms["bpm_high"] = np.where((symptoms["bpm"] >= 100), 1, 2)
+
+symptoms["tachycardia"] = symptoms["bpm_high"].diff()
+conditions = [
+    (symptoms["tachycardia"] == -1),
+    (symptoms["tachycardia"] == 1)
+]
+values = ["Alerte : battements de coeur élevés", "Battements de coeur normalisés"]
+alerts['tachycardia'] = np.select(conditions, values)
+
+# Battery alert : send an alert when battery level is lower than 5%
+alerts["battery_low"] = np.where(symptoms["bat_low"].diff() == -2, "Alerte : niveau de batterie faible", 0)
+print(symptoms.to_string())
+print(alerts.to_string())
