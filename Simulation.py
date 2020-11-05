@@ -8,6 +8,7 @@ Renvoie : fichier results.csv (Temps, Fièvre, Dyspnée, Tachycardie, Batterie f
 Alerte envoyée par le dispositif)
 
 TODO : Mesurer la consommation de l'ESP32 avec tous les capteurs et déterminer quand la batterie arrêtre de fonctionner
+TODO : inclure les alertes pour oxy et bpm, oxy : > 95% = 2, < 95% = 1, diff, -1 = taux low, +1 = taux normal
 """
 
 import pandas as pd
@@ -77,8 +78,13 @@ with open('data.csv') as data:
 """
 
 symptoms = pd.read_csv("data.csv")  # Opens data.csv file
-symptoms.index = pd.to_datetime(symptoms.pop("Temps"))  # Determines the first column (date-time) as index
 symptoms["bat_low"] = np.where(symptoms["bat"] < 5, True, False)  # Adds a column "bat_low", True if bat < 5%
+
+# Determine the first column (date-time) as index
+symptoms.index = pd.to_datetime(symptoms.pop("Temps"))
+
+# Create alerts dataframe
+alerts = pd.DataFrame()
 
 # Conditions for different fever levels
 conditions = [
@@ -86,8 +92,32 @@ conditions = [
     (symptoms['fievre'] > 37.5) & (symptoms['fievre'] <= 38),
     (symptoms['fievre'] > 38) & (symptoms['fievre'] <= 39.5),
     (symptoms['fievre'] > 39.5)
-    ]
-values = ['Normal', 'Bénin', 'Grave', 'Très Grave']
+]
+# values = ['Normal', 'Bénin', 'Grave', 'Très Grave']
+values = [1, 2, 3, 4]
 symptoms['Fievre_niveau'] = np.select(conditions, values)
-symptoms = symptoms.drop(symptoms[symptoms.bat < 0.5].index)  # Removes measurements where battery level < 0.5%
-symptoms = symptoms.drop(symptoms[(symptoms['oxy'] == 0) & symptoms['bpm'] == 0].index)  # Removes
+
+# To detect when no data has been received (ESP lost connection to Wifi)
+symptoms["no_data_oxy"] = pd.isna(symptoms["oxy"])
+symptoms["no_data_bpm"] = pd.isna(symptoms["bpm"])
+symptoms["no_data"] = np.where((symptoms["no_data_bpm"] & symptoms["no_data_oxy"]), True, False)
+symptoms = symptoms.drop(columns=["no_data_oxy", "no_data_bpm"])
+
+# Check if no data has been received for the past 25 minutes
+symptoms["t-1"] = symptoms['no_data'].shift(1)
+symptoms["t-2"] = symptoms['no_data'].shift(2)
+symptoms["t-3"] = symptoms['no_data'].shift(3)
+symptoms["t-4"] = symptoms['no_data'].shift(4)
+symptoms["t-5"] = symptoms['no_data'].shift(5)
+symptoms["disconnected"] = np.where((symptoms['no_data'] & symptoms['t-1'] & symptoms['t-2'] & symptoms['t-3'] & symptoms['t-4'] & symptoms['t-5']), True, False)
+symptoms = symptoms.drop(columns=["t-1", "t-2", "t-3", "t-4", "t-5"])
+
+# Disconnect Alerts : send an alert when no data has been received for the last 25 minutes
+alerts["disconnected"] = symptoms["disconnected"]
+
+# Fever Alerts : send an alert when the fever level changes
+symptoms["fever_diff"] = symptoms['Fievre_niveau'].diff()
+alerts["fever"] = np.where(symptoms["fever_diff"] != float(0), symptoms["Fievre_niveau"], False)
+
+# Oxymeter alerts : send an alert when the oxygen concentration decreases to less than 95%
+
