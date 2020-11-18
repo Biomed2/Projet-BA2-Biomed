@@ -12,6 +12,13 @@ TODO : Mesurer la consommation de l'ESP32 avec tous les capteurs et déterminer 
 
 import pandas as pd
 import numpy as np
+"""
+A introduire dans la simu
+"""
+import csv
+
+with open('données.txt') as csv_file:
+    data.csv = csv.reader(csv_file, delimiter=',')
 
 symptoms = pd.read_csv("data.csv")  # Opens data.csv file
 symptoms["bat_low"] = np.where(symptoms["bat"] < 5, -1, 1)  # Adds a column "bat_low", True if bat < 5%
