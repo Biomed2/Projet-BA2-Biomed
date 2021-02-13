@@ -1,5 +1,6 @@
 #include <WiFiManager.h>
 #include <InfluxDbClient.h>
+#include <InfluxDbCloud.h>
 #include <OneWire.h>
 #include <DallasTemperature.h>
 #include "BLEDevice.h"
@@ -16,7 +17,21 @@ const char* cred_prenom;
 #define INFLUX_DB_NAME "biomed2"
 #define INFLUXDB_USER "biomed2"
 #define INFLUXDB_PASSWORD "SsUdBB5zicWao8M4"
+#define TZ_INFO "CET-1CEST,M3.5.0,M10.5.0/3"
+// NTP servers the for time synchronization.
+// For the fastest time sync find NTP servers in your area: https://www.pool.ntp.org/zone/
+#define NTP_SERVER1  "pool.ntp.org"
+#define NTP_SERVER2  "time.nis.gov"
+#define WRITE_PRECISION WritePrecision::S
+#define MAX_BATCH_SIZE 10
+#define WRITE_BUFFER_SIZE 30
 InfluxDBClient client(INFLUXDB_URL, INFLUX_DB_NAME);
+// Set timezone string according to https://www.gnu.org/software/libc/manual/html_node/TZ-Variable.html
+// Examples:
+//  Pacific Time:   "PST8PDT"
+//  Eastern:        "EST5EDT"
+//  Japanesse:      "JST-9"
+//  Central Europe: "CET-1CEST,M3.5.0,M10.5.0/3"
 
 //Deep Sleep setup
 #define uS_TO_S_FACTOR 1000000
@@ -45,6 +60,12 @@ static BLEUUID serviceUUID("f000efe0-0451-4000-0000-00000000b000");
 // The characteristic of the remote service we are interested in.
 static BLEUUID    charUUID("f000efe3-0451-4000-0000-00000000b000");
 
+static float bpm;
+static float pulse;
+static float oxygen;
+
+int iterations = 0;
+
 static boolean doConnect = false;
 static boolean connected = false;
 static boolean doScan = false;
@@ -54,11 +75,25 @@ static int OxyRSSI = 0;
 //timestamps when oxymeter was respectively on and off
 unsigned long laston = 0, lastoff = 0;
 
-static void pointInflux ( String prenom, String nom, String stat, String pointName, float variable ){
+static Point pointInflux ( String prenom, String nom, String stat, String pointName, float variable ){
   Point pointStatus(stat);
   pointStatus.addTag(prenom, nom);
   pointStatus.addField(pointName, variable);
-  client.writePoint(pointStatus);  
+  return pointStatus;  
+}
+//Oxymeter callbacks that can be changed
+//callback with the SpO2 and Pulse intensity values
+static void spo2piCallback(int _spo2,float _pi) {
+  Serial.print("The current oxymeter value (SpO2) is ");
+  Serial.print(_spo2);
+  Serial.print("% and the pulse intensity is ");
+  Serial.println(_pi);
+}
+
+//callback with the Pulse/Hearht Rate (bpm)
+static void bpmCallback(int _bpm) {
+  Serial.print("The current HR is ");
+  Serial.println(_bpm);
 }
 
 //callback when the oxymeter is on or off
@@ -76,10 +111,12 @@ static void onoffCallback(boolean is_on,long duration) {
 //callbacks on connection and disconnection of the oxymeter
 class MyClientCallback : public BLEClientCallbacks {
     void onConnect(BLEClient* pclient) {
+      Serial.println("Connected to the oxymeter");
     }
 
     void onDisconnect(BLEClient* pclient) {
-      connected = false; //do not remove this !!
+      connected = false; //do not remove this !!      
+      Serial.println("Disconnected from the oxymeter");
     }
 };
 
@@ -94,15 +131,16 @@ static void notifyCallback(
     dbgout(pData[i]);
     dbgout(", ");
   }
-  dbgoutln(); 
+  dbgoutln();
   switch (pData[0]) {
     case 18:
-      pointInflux ("Jean Michel", "Dupont", "statusSpo2", "concentrationOxy", pData[12]);
-      pointInflux ("Jean Michel", "Dupont", "statusPi", "pulse", pData[14]/10);
-      
+      spo2piCallback(pData[12],pData[14] / 10.0);
+      oxygen = pData[12];
+      pulse = pData[14];
       break;
     case 10:
-      pointInflux ("Jean Michel", "Dupont", "statusBpm", "bpm", pData[12]);
+      bpmCallback(pData[12]);
+      bpm = pData[12];
       break;
     case 252:
       if (pData[2] == 2) laston = millis();
@@ -111,6 +149,7 @@ static void notifyCallback(
       break;    
   }  
 }
+
 
 //Connection to the oxymeter
 bool connectToServer() {
@@ -222,6 +261,12 @@ void setup() {
   pBLEScan->setActiveScan(true);
   dbgoutln("BLE intensive scan for 10sec");
   pBLEScan->start(10, false);
+
+    // Accurate time is necessary for certificate validation and writing in batches
+  // Syncing progress and the time will be printed to Serial.
+  timeSync(TZ_INFO, NTP_SERVER1, NTP_SERVER2);
+  // Enable messages batching and retry buffer
+  client.setWriteOptions(WriteOptions().writePrecision(WRITE_PRECISION).batchSize(MAX_BATCH_SIZE).bufferSize(WRITE_BUFFER_SIZE));
 }
 
 void loop() {
@@ -231,15 +276,12 @@ void loop() {
   }
   else {
     digitalWrite(13, LOW);
-  }  
+  } 
   // Read Temperature
-  sensors.requestTemperatures();
-  float tempC = sensors.getTempC(insideThermometer);
-  int tempSend = 100*tempC;
-
-  pointInflux ("Jean Michel", "Dupont", "statusTemp", "temperature", tempC);
- 
-  
+    sensors.requestTemperatures();
+    float tempC = sensors.getTempC(insideThermometer);
+    int tempSend = 100*tempC;
+    
   // If the flag "doConnect" is true then we have scanned for and found the desired
   // BLE Server (i.e. Oxymeter) with which we wish to connect.  Now we connect to it.  Once we are
   // connected we set the connected flag to be true.
@@ -254,8 +296,53 @@ void loop() {
 
   // If we are connected to a peer BLE Server, update the characteristic each time we are reached
   // with the current time since boot.
-  if (connected) {    
-    //we may do something here since we know we are connected to the oxymeter
+  if (connected) {
+ 
+    // Sync time for batching once per hour
+    if (iterations++ >= 360) {
+      timeSync(TZ_INFO, NTP_SERVER1, NTP_SERVER2);
+      iterations = 0;
+    }
+
+    // Report networks (low priority data) just in case we successfully wrote the previous batch
+    if (client.isBufferEmpty()) {
+      // Report all the detected wifi networks
+      int networks = WiFi.scanNetworks();
+      // Set identical time for the whole network scan
+      time_t tnow = time(nullptr);
+      for (int i = 0; i < networks; i++) {
+        Point pointSpo2 = pointInflux ("Jean Michel", "Dupont", "statusSpo2", "concentrationOxy", oxygen);
+        pointSpo2.setTime(tnow);  //set the time
+        Point pointPulse = pointInflux ("Jean Michel", "Dupont", "statusPi", "pulse", pulse);
+        pointPulse.setTime(tnow);  //set the time
+        Point pointBpm = pointInflux ("Jean Michel", "Dupont", "statusBpm", "bpm",bpm);
+        pointBpm.setTime(tnow);  //set the time
+        Point pointTemp = pointInflux ("Jean Michel", "Dupont", "statusTemp", "temperature", tempC);
+        pointTemp.setTime(tnow);  //set the time
+        
+        // Print what are we exactly writing
+        //Serial.print("Writing: ");
+        //Serial.println(client.pointToLineProtocol(sensorNetworks));
+  
+        // Write point into buffer - low priority measures
+        client.writePoint(pointSpo2);
+        client.writePoint(pointPulse);
+        client.writePoint(pointBpm);
+        client.writePoint(pointTemp);
+      }
+    } else
+      Serial.println("Wifi networks reporting skipped due to communication issues");
+    
+
+  // End of the iteration - force write of all the values into InfluxDB as single transaction
+  Serial.println("Flushing data into InfluxDB");
+  if (!client.flushBuffer()) {
+    Serial.print("InfluxDB flush failed: ");
+    Serial.println(client.getLastErrorMessage());
+    Serial.print("Full buffer: ");
+    Serial.println(client.isBufferFull() ? "Yes" : "No");
+  }    
+     
   } else if (doScan) {
     //not connected anymore --> infinite scan 
     BLEDevice::getScan()->start(0);  // this is just eample to start scan after disconnect (infinite scan !), most likely there is better way to do it in arduino
