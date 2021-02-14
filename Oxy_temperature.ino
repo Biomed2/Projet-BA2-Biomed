@@ -23,15 +23,10 @@ const char* cred_prenom;
 #define NTP_SERVER1  "pool.ntp.org"
 #define NTP_SERVER2  "time.nis.gov"
 #define WRITE_PRECISION WritePrecision::S
-#define MAX_BATCH_SIZE 10
+#define MAX_BATCH_SIZE 60
 #define WRITE_BUFFER_SIZE 30
 InfluxDBClient client(INFLUXDB_URL, INFLUX_DB_NAME);
-// Set timezone string according to https://www.gnu.org/software/libc/manual/html_node/TZ-Variable.html
-// Examples:
-//  Pacific Time:   "PST8PDT"
-//  Eastern:        "EST5EDT"
-//  Japanesse:      "JST-9"
-//  Central Europe: "CET-1CEST,M3.5.0,M10.5.0/3"
+
 
 //Deep Sleep setup
 #define uS_TO_S_FACTOR 1000000
@@ -247,7 +242,20 @@ void setup() {
   //Temperature sensors
   sensors.begin();
   
+  Serial.print("Parasite power is: "); 
+  if (sensors.isParasitePowerMode()) Serial.println("ON");
+  else Serial.println("OFF");
+  
+  if (!sensors.getAddress(insideThermometer, 0)) Serial.println("Unable to find address for Device 0"); 
+
+  Serial.print("Device 0 Address: ");
+  //printAddress(insideThermometer);
+  Serial.println();
+  
   sensors.setResolution(insideThermometer, 12);
+  Serial.print("Device 0 Resolution: ");
+  Serial.print(sensors.getResolution(insideThermometer), DEC); 
+  Serial.println();
 
   dbgoutln("Starting Arduino BLE Client application...");
   BLEDevice::init("");
@@ -280,7 +288,7 @@ void loop() {
   // Read Temperature
     sensors.requestTemperatures();
     float tempC = sensors.getTempC(insideThermometer);
-    int tempSend = 100*tempC;
+    int tempSend = tempC;
     
   // If the flag "doConnect" is true then we have scanned for and found the desired
   // BLE Server (i.e. Oxymeter) with which we wish to connect.  Now we connect to it.  Once we are
