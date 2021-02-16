@@ -23,7 +23,7 @@ const char* cred_prenom;
 #define NTP_SERVER1  "pool.ntp.org"
 #define NTP_SERVER2  "time.nis.gov"
 #define WRITE_PRECISION WritePrecision::S
-#define MAX_BATCH_SIZE 60
+#define MAX_BATCH_SIZE 3
 #define WRITE_BUFFER_SIZE 120
 InfluxDBClient client(INFLUXDB_URL, INFLUX_DB_NAME);
 
@@ -286,7 +286,7 @@ void setup() {
 }
 
 void loop() {
-  
+ 
   if(WiFi.status() == 3) {
     digitalWrite(13, HIGH);
   }
@@ -315,11 +315,11 @@ void loop() {
   if (connected) {
  
     // Sync time for batching once per hour
-    if (iterations++ >= 60) {
+    if (iterations++ >= 3000) {
       timeSync(TZ_INFO, NTP_SERVER1, NTP_SERVER2);
       iterations = 0;
     }
-      
+     
     pointSpo2.setTime(time(nullptr));
     pointSpo2.addField("concentrationOxy", oxygen);
     Serial.println(client.pointToLineProtocol(pointSpo2));
@@ -358,5 +358,5 @@ void loop() {
     BLEDevice::getScan()->start(0);  // this is just eample to start scan after disconnect (infinite scan !), most likely there is better way to do it in arduino
   }  
   
-  //delay(20000);  //Delay half a second between loops/this delay can probably be removed
+  delay(5000);  //Delay half a second between loops/this delay can probably be removed
 }
