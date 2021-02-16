@@ -24,7 +24,7 @@ const char* cred_prenom;
 #define NTP_SERVER2  "time.nis.gov"
 #define WRITE_PRECISION WritePrecision::S
 #define MAX_BATCH_SIZE 60
-#define WRITE_BUFFER_SIZE 30
+#define WRITE_BUFFER_SIZE 120
 InfluxDBClient client(INFLUXDB_URL, INFLUX_DB_NAME);
 
 
@@ -55,6 +55,11 @@ static BLEUUID serviceUUID("f000efe0-0451-4000-0000-00000000b000");
 // The characteristic of the remote service we are interested in.
 static BLEUUID    charUUID("f000efe3-0451-4000-0000-00000000b000");
 
+Point pointSpo2("statusSpo2");
+Point pointPulse("statusPi"); 
+Point pointBpm("statusBpm"); 
+Point pointTemp("statusTemp");
+
 static float bpm;
 static float pulse;
 static float oxygen;
@@ -70,12 +75,13 @@ static int OxyRSSI = 0;
 //timestamps when oxymeter was respectively on and off
 unsigned long laston = 0, lastoff = 0;
 
-static Point pointInflux ( String prenom, String nom, String stat, String pointName, float variable ){
-  Point pointStatus(stat);
-  pointStatus.addTag(prenom, nom);
-  pointStatus.addField(pointName, variable);
-  return pointStatus;  
-}
+//static Point pointInflux ( String prenom, String nom, String stat, String pointName, float variable ){
+ // Point pointStatus(stat);
+ // pointStatus.addTag(prenom, nom);
+ // pointStatus.addField(pointName, variable);
+ // return pointStatus;  
+//}
+
 //Oxymeter callbacks that can be changed
 //callback with the SpO2 and Pulse intensity values
 static void spo2piCallback(int _spo2,float _pi) {
@@ -230,10 +236,17 @@ void setup() {
   }
   ++bootCount;
   pinMode(13, OUTPUT);
-  
+
   Serial.begin(115200);
   delay(1000);
   Serial.println("\n");
+
+  // Accurate time is necessary for certificate validation and writing in batches
+  // Syncing progress and the time will be printed to Serial.
+  timeSync(TZ_INFO, NTP_SERVER1, NTP_SERVER2);
+  
+  // Enable messages batching and retry buffer
+  client.setWriteOptions(WriteOptions().writePrecision(WRITE_PRECISION).batchSize(MAX_BATCH_SIZE).bufferSize(WRITE_BUFFER_SIZE));
 
   wm.autoConnect(ssid, password);
 
@@ -270,11 +283,6 @@ void setup() {
   dbgoutln("BLE intensive scan for 10sec");
   pBLEScan->start(10, false);
 
-    // Accurate time is necessary for certificate validation and writing in batches
-  // Syncing progress and the time will be printed to Serial.
-  timeSync(TZ_INFO, NTP_SERVER1, NTP_SERVER2);
-  // Enable messages batching and retry buffer
-  client.setWriteOptions(WriteOptions().writePrecision(WRITE_PRECISION).batchSize(MAX_BATCH_SIZE).bufferSize(WRITE_BUFFER_SIZE));
 }
 
 void loop() {
@@ -307,54 +315,48 @@ void loop() {
   if (connected) {
  
     // Sync time for batching once per hour
-    if (iterations++ >= 360) {
+    if (iterations++ >= 60) {
       timeSync(TZ_INFO, NTP_SERVER1, NTP_SERVER2);
       iterations = 0;
     }
-
-    // Report networks (low priority data) just in case we successfully wrote the previous batch
-    if (client.isBufferEmpty()) {
-      // Report all the detected wifi networks
-      int networks = WiFi.scanNetworks();
-      // Set identical time for the whole network scan
-      time_t tnow = time(nullptr);
-      for (int i = 0; i < networks; i++) {
-        Point pointSpo2 = pointInflux ("Jean Michel", "Dupont", "statusSpo2", "concentrationOxy", oxygen);
-        pointSpo2.setTime(tnow);  //set the time
-        Point pointPulse = pointInflux ("Jean Michel", "Dupont", "statusPi", "pulse", pulse);
-        pointPulse.setTime(tnow);  //set the time
-        Point pointBpm = pointInflux ("Jean Michel", "Dupont", "statusBpm", "bpm",bpm);
-        pointBpm.setTime(tnow);  //set the time
-        Point pointTemp = pointInflux ("Jean Michel", "Dupont", "statusTemp", "temperature", tempC);
-        pointTemp.setTime(tnow);  //set the time
-        
-        // Print what are we exactly writing
-        //Serial.print("Writing: ");
-        //Serial.println(client.pointToLineProtocol(sensorNetworks));
-  
-        // Write point into buffer - low priority measures
-        client.writePoint(pointSpo2);
-        client.writePoint(pointPulse);
-        client.writePoint(pointBpm);
-        client.writePoint(pointTemp);
-      }
-    } else
-      Serial.println("Wifi networks reporting skipped due to communication issues");
+      
+    pointSpo2.setTime(time(nullptr));
+    pointSpo2.addField("concentrationOxy", oxygen);
+    Serial.println(client.pointToLineProtocol(pointSpo2));
+    client.writePoint(pointSpo2);
+    pointSpo2.clearFields();
     
-
-  // End of the iteration - force write of all the values into InfluxDB as single transaction
-  Serial.println("Flushing data into InfluxDB");
-  if (!client.flushBuffer()) {
-    Serial.print("InfluxDB flush failed: ");
-    Serial.println(client.getLastErrorMessage());
-    Serial.print("Full buffer: ");
-    Serial.println(client.isBufferFull() ? "Yes" : "No");
-  }    
+    pointPulse.setTime(time(nullptr));
+    pointPulse.addField("pulse", pulse);
+    Serial.println(client.pointToLineProtocol(pointPulse));
+    client.writePoint(pointPulse);
+    pointPulse.clearFields();
+    
+    pointBpm.setTime(time(nullptr));
+    pointBpm.addField("bpm", bpm );
+    Serial.println(client.pointToLineProtocol(pointBpm));
+    client.writePoint(pointBpm);
+    pointBpm.clearFields();
+    
+    pointTemp.setTime(time(nullptr));
+    pointTemp.addField("temperature", tempC);
+    Serial.println(client.pointToLineProtocol(pointTemp));
+    client.writePoint(pointTemp);
+    pointTemp.clearFields();
+    
+    // End of the iteration - force write of all the values into InfluxDB as single transaction
+    Serial.println("Flushing data into InfluxDB");
+    if (!client.flushBuffer()) {
+      Serial.print("InfluxDB flush failed: ");
+      Serial.println(client.getLastErrorMessage());
+      Serial.print("Full buffer: ");
+      Serial.println(client.isBufferFull() ? "Yes" : "No");
+    }      
      
   } else if (doScan) {
     //not connected anymore --> infinite scan 
     BLEDevice::getScan()->start(0);  // this is just eample to start scan after disconnect (infinite scan !), most likely there is better way to do it in arduino
   }  
   
-  //delay(500);  Delay half a second between loops/this delay can probably be removed
+  //delay(20000);  //Delay half a second between loops/this delay can probably be removed
 }
