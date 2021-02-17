@@ -1,6 +1,6 @@
 #include <WiFiManager.h>
 #include <InfluxDbClient.h>
-#include <InfluxDbCloud.h>
+//#include <InfluxDbCloud.h>
 #include <OneWire.h>
 #include <DallasTemperature.h>
 #include "BLEDevice.h"
@@ -17,21 +17,15 @@ const char* cred_prenom;
 #define INFLUX_DB_NAME "biomed2"
 #define INFLUXDB_USER "biomed2"
 #define INFLUXDB_PASSWORD "SsUdBB5zicWao8M4"
+InfluxDBClient client(INFLUXDB_URL, INFLUX_DB_NAME);
+
 #define TZ_INFO "CET-1CEST,M3.5.0,M10.5.0/3"
-// NTP servers the for time synchronization.
-// For the fastest time sync find NTP servers in your area: https://www.pool.ntp.org/zone/
+// NTP servers the for time synchronization.#define NTP_SERVER1  "pool.ntp.org"
 #define NTP_SERVER1  "pool.ntp.org"
 #define NTP_SERVER2  "time.nis.gov"
 #define WRITE_PRECISION WritePrecision::S
-#define MAX_BATCH_SIZE 3
-#define WRITE_BUFFER_SIZE 120
-InfluxDBClient client(INFLUXDB_URL, INFLUX_DB_NAME);
-
-
-//Deep Sleep setup
-#define uS_TO_S_FACTOR 1000000
-#define TIME_TO_SLEEP  10  
-RTC_DATA_ATTR int bootCount = 0;
+#define MAX_BATCH_SIZE 40
+#define WRITE_BUFFER_SIZE 30
 
 //Temperature sensor setup
 OneWire oneWire(4);
@@ -74,13 +68,6 @@ static BLEAdvertisedDevice* myDevice;
 static int OxyRSSI = 0;
 //timestamps when oxymeter was respectively on and off
 unsigned long laston = 0, lastoff = 0;
-
-//static Point pointInflux ( String prenom, String nom, String stat, String pointName, float variable ){
- // Point pointStatus(stat);
- // pointStatus.addTag(prenom, nom);
- // pointStatus.addField(pointName, variable);
- // return pointStatus;  
-//}
 
 //Oxymeter callbacks that can be changed
 //callback with the SpO2 and Pulse intensity values
@@ -224,7 +211,6 @@ class MyAdvertisedDeviceCallbacks: public BLEAdvertisedDeviceCallbacks {
 }; // MyAdvertisedDeviceCallbacks
 
 void setup() {
-  if(bootCount == 0) {  
     //WiFi Station setup
     WiFi.mode(WIFI_STA);
     WiFiManagerParameter nom("nom", "Nom", "", 40);
@@ -233,24 +219,33 @@ void setup() {
     WiFiManagerParameter prenom("prenom", "Prénom", "", 40);
     wm.addParameter(&prenom);
     cred_prenom = prenom.getValue();
-  }
-  ++bootCount;
+    
   pinMode(13, OUTPUT);
 
   Serial.begin(115200);
   delay(1000);
   Serial.println("\n");
-
-  // Accurate time is necessary for certificate validation and writing in batches
-  // Syncing progress and the time will be printed to Serial.
-  timeSync(TZ_INFO, NTP_SERVER1, NTP_SERVER2);
-  
-  // Enable messages batching and retry buffer
-  client.setWriteOptions(WriteOptions().writePrecision(WRITE_PRECISION).batchSize(MAX_BATCH_SIZE).bufferSize(WRITE_BUFFER_SIZE));
-
   wm.autoConnect(ssid, password);
 
   client.setConnectionParamsV1(INFLUXDB_URL, INFLUX_DB_NAME, INFLUXDB_USER, INFLUXDB_PASSWORD);
+   
+  pointSpo2.addTag("device", "esp32");
+  pointPulse.addTag("device", "esp32");
+  pointBpm.addTag("device", "esp32");
+  pointTemp.addTag("device", "esp32");
+  
+  // Accurate time is necessary for certificate validation and writing in batches
+  // Syncing progress and the time will be printed to Serial.
+  timeSync(TZ_INFO, NTP_SERVER1, NTP_SERVER2);
+
+    if (client.validateConnection()) {
+    Serial.print("Connected to InfluxDB: ");
+    Serial.println(client.getServerUrl());
+  } else {
+    Serial.print("InfluxDB connection failed: ");
+    Serial.println(client.getLastErrorMessage());
+  }
+  client.setWriteOptions(WriteOptions().writePrecision(WRITE_PRECISION).batchSize(MAX_BATCH_SIZE).bufferSize(WRITE_BUFFER_SIZE));
 
   //Temperature sensors
   sensors.begin();
@@ -286,6 +281,12 @@ void setup() {
 }
 
 void loop() {
+  if (iterations != 10) {
+    WiFi.disconnect();
+  }
+  if (iterations%10 == 0) {
+    wm.autoConnect(ssid, password);
+  }
  
   if(WiFi.status() == 3) {
     digitalWrite(13, HIGH);
@@ -310,53 +311,42 @@ void loop() {
     doConnect = false;
   }
 
-  // If we are connected to a peer BLE Server, update the characteristic each time we are reached
-  // with the current time since boot.
-  if (connected) {
- 
-    // Sync time for batching once per hour
-    if (iterations++ >= 3000) {
+      // Sync time for batching once per hour
+    if (iterations++ >= 360) {
       timeSync(TZ_INFO, NTP_SERVER1, NTP_SERVER2);
       iterations = 0;
     }
-     
+
+  // If we are connected to a peer BLE Server, update the characteristic each time we are reached
+  // with the current time since boot.
+  if (connected) {
     pointSpo2.setTime(time(nullptr));
     pointSpo2.addField("concentrationOxy", oxygen);
-    Serial.println(client.pointToLineProtocol(pointSpo2));
+    Serial.println(pointSpo2.toLineProtocol());
     client.writePoint(pointSpo2);
     pointSpo2.clearFields();
     
     pointPulse.setTime(time(nullptr));
     pointPulse.addField("pulse", pulse);
-    Serial.println(client.pointToLineProtocol(pointPulse));
+    Serial.println(pointPulse.toLineProtocol());
     client.writePoint(pointPulse);
     pointPulse.clearFields();
     
     pointBpm.setTime(time(nullptr));
     pointBpm.addField("bpm", bpm );
-    Serial.println(client.pointToLineProtocol(pointBpm));
+    Serial.println(pointBpm.toLineProtocol());
     client.writePoint(pointBpm);
     pointBpm.clearFields();
     
     pointTemp.setTime(time(nullptr));
     pointTemp.addField("temperature", tempC);
-    Serial.println(client.pointToLineProtocol(pointTemp));
+    Serial.println(pointTemp.toLineProtocol());
     client.writePoint(pointTemp);
     pointTemp.clearFields();
-    
-    // End of the iteration - force write of all the values into InfluxDB as single transaction
-    Serial.println("Flushing data into InfluxDB");
-    if (!client.flushBuffer()) {
-      Serial.print("InfluxDB flush failed: ");
-      Serial.println(client.getLastErrorMessage());
-      Serial.print("Full buffer: ");
-      Serial.println(client.isBufferFull() ? "Yes" : "No");
-    }      
-     
+              
   } else if (doScan) {
     //not connected anymore --> infinite scan 
     BLEDevice::getScan()->start(0);  // this is just eample to start scan after disconnect (infinite scan !), most likely there is better way to do it in arduino
   }  
   
-  delay(5000);  //Delay half a second between loops/this delay can probably be removed
-}
+  delay(2000);  //Delay half a second between loops/this delay can probably be removed
