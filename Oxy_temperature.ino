@@ -24,7 +24,7 @@ InfluxDBClient client(INFLUXDB_URL, INFLUX_DB_NAME);
 #define NTP_SERVER1  "pool.ntp.org"
 #define NTP_SERVER2  "time.nis.gov"
 #define WRITE_PRECISION WritePrecision::S
-#define MAX_BATCH_SIZE 40
+#define MAX_BATCH_SIZE 50
 #define WRITE_BUFFER_SIZE 30
 
 //Temperature sensor setup
@@ -53,6 +53,7 @@ Point pointSpo2("statusSpo2");
 Point pointPulse("statusPi"); 
 Point pointBpm("statusBpm"); 
 Point pointTemp("statusTemp");
+Point pointBat("statusBat");
 
 static float bpm;
 static float pulse;
@@ -211,7 +212,11 @@ class MyAdvertisedDeviceCallbacks: public BLEAdvertisedDeviceCallbacks {
 }; // MyAdvertisedDeviceCallbacks
 
 void setup() {
+    pinMode(13, OUTPUT);
+    pinMode(14, OUTPUT);
+    pinMode(26, OUTPUT);
     //WiFi Station setup
+    digitalWrite(26, HIGH);
     WiFi.mode(WIFI_STA);
     WiFiManagerParameter nom("nom", "Nom", "", 40);
     wm.addParameter(&nom);
@@ -219,8 +224,6 @@ void setup() {
     WiFiManagerParameter prenom("prenom", "Prénom", "", 40);
     wm.addParameter(&prenom);
     cred_prenom = prenom.getValue();
-    
-  pinMode(13, OUTPUT);
 
   Serial.begin(115200);
   delay(1000);
@@ -228,7 +231,7 @@ void setup() {
   wm.autoConnect(ssid, password);
 
   client.setConnectionParamsV1(INFLUXDB_URL, INFLUX_DB_NAME, INFLUXDB_USER, INFLUXDB_PASSWORD);
-   
+  digitalWrite(26, LOW); 
   pointSpo2.addTag("device", "esp32");
   pointPulse.addTag("device", "esp32");
   pointBpm.addTag("device", "esp32");
@@ -289,11 +292,14 @@ void loop() {
   }
  
   if(WiFi.status() == 3) {
-    digitalWrite(13, HIGH);
+    digitalWrite(14, HIGH);
   }
   else {
-    digitalWrite(13, LOW);
-  } 
+    digitalWrite(14, LOW);
+  }
+  int bat = map(analogRead(35), 1500, 2050, 0, 100); 
+  Serial.println(analogRead(35));
+  Serial.println(bat);
   // Read Temperature
     sensors.requestTemperatures();
     float tempC = sensors.getTempC(insideThermometer);
@@ -343,6 +349,12 @@ void loop() {
     Serial.println(pointTemp.toLineProtocol());
     client.writePoint(pointTemp);
     pointTemp.clearFields();
+
+    pointBat.setTime(time(nullptr));
+    pointBat.addField("batterie", bat);
+    Serial.println(pointBat.toLineProtocol());
+    client.writePoint(pointBat);
+    pointBat.clearFields();
               
   } else if (doScan) {
     //not connected anymore --> infinite scan 
@@ -350,3 +362,4 @@ void loop() {
   }  
   
   delay(2000);  //Delay half a second between loops/this delay can probably be removed
+}
