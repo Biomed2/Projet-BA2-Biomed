@@ -1,5 +1,3 @@
-
-
 #include <WiFiManager.h>
 #include <InfluxDbClient.h>
 #include <OneWire.h>
@@ -11,8 +9,7 @@
 WiFiManager wm;
 const char* ssid = "ESP32y";
 const char* password = "123456789";
-const char* cred_nom;
-const char* cred_prenom;
+const char* PATIENT_ID;
 
 //Influxdb setup
 #define INFLUXDB_URL "http://influx.biomed.ulb.ovh"
@@ -21,29 +18,26 @@ const char* cred_prenom;
 #define INFLUXDB_PASSWORD "SsUdBB5zicWao8M4"
 InfluxDBClient client(INFLUXDB_URL, INFLUX_DB_NAME);
 
+//Timestamp setup
 #define TZ_INFO "CET-1CEST,M3.5.0,M10.5.0/3"
-// NTP servers the for time synchronization.#define NTP_SERVER1  "pool.ntp.org"
 #define NTP_SERVER1  "pool.ntp.org"
 #define NTP_SERVER2  "time.nis.gov"
 #define WRITE_PRECISION WritePrecision::S
-#define MAX_BATCH_SIZE 10
-#define WRITE_BUFFER_SIZE 60
+#define MAX_BATCH_SIZE 100
+#define WRITE_BUFFER_SIZE 20
 
 //Temperature sensor setup
 OneWire oneWire(4);
 DallasTemperature sensors(&oneWire);
 DeviceAddress insideThermometer;
 
-//Bluetooth
+//Bluetooth setup
 //If you know the oxy BLE address, you can replace by it, so it will always connect to a specific one
 #define OXYADDRESS "D5:13:D5:50:08:6D"
-
 //Device name of the oxymeter (don't change it)
 #define OXYNAME "SP001"
-
 //NULL BLUTOOTH MAC ADDRESS
 #define BLENULLADDRESS "00:00:00:00:00:00"
-
 // BLE Address of the oxymeter
 static BLEAddress OxyAddr(OXYADDRESS);
 // The remote service we wish to connect to (only visible after connection to the device !)
@@ -57,6 +51,7 @@ static float bpm;
 static float pulse;
 static float oxygen;
 
+int rssi;
 int iterations = 0;
 
 static boolean oxygenConnected = false;
@@ -66,11 +61,11 @@ static boolean connected = false;
 static boolean doScan = false;
 static BLERemoteCharacteristic* pRemoteCharacteristic;
 static BLEAdvertisedDevice* myDevice;
-static int OxyRSSI = 0;
+static int OxyRSSI = 0;   
 //timestamps when oxymeter was respectively on and off
 unsigned long laston = 0, lastoff = 0;
 
-//Oxymeter callbacks that can be changed
+
 //callback with the SpO2 and Pulse intensity values
 static void spo2piCallback(int _spo2,float _pi) {
   Serial.print("The current oxymeter value (SpO2) is ");
@@ -215,91 +210,101 @@ void setup() {
     pinMode(13, OUTPUT);
     pinMode(14, OUTPUT);
     pinMode(26, OUTPUT);
+    pinMode(35, INPUT);
+
+    Serial.begin(115200);
+    delay(1000);
+    Serial.println("\n");
+    
     //WiFi Station setup
     digitalWrite(26, HIGH);
+
+    
+    dbgoutln("Starting Arduino BLE Client application...");
+    BLEDevice::init("");
+    // Retrieve a Scanner and set the callback we want to use to be informed when we
+    // have detected a new device.  Specify that we want active scanning and start the
+    // scan to run for 10 seconds.
+    BLEScan* pBLEScan = BLEDevice::getScan();
+    pBLEScan->setAdvertisedDeviceCallbacks(new MyAdvertisedDeviceCallbacks());
+    pBLEScan->setInterval(1349);
+    pBLEScan->setWindow(449);
+    pBLEScan->setActiveScan(true);
+    dbgoutln("BLE intensive scan for 10sec");
+    pBLEScan->start(10, false);
+    
     WiFi.mode(WIFI_STA);
-    WiFiManagerParameter nom("nom", "Nom", "", 40);
-    wm.addParameter(&nom);
-    cred_nom = nom.getValue();
-    WiFiManagerParameter prenom("prenom", "Prénom", "", 40);
-    wm.addParameter(&prenom);
-    cred_prenom = prenom.getValue();
-
-  Serial.begin(115200);
-  delay(1000);
-  Serial.println("\n");
-  wm.autoConnect(ssid, password);
-
-  client.setConnectionParamsV1(INFLUXDB_URL, INFLUX_DB_NAME, INFLUXDB_USER, INFLUXDB_PASSWORD);
-  digitalWrite(26, LOW); 
-  pointStatus.addTag("device", "esp32");
+    WiFiManagerParameter PatientID("PatientID", "PatientID", "", 16);
+    wm.addParameter(&PatientID);
+    PATIENT_ID = PatientID.getValue();
+    
+    wm.autoConnect(ssid, password);
   
-  // Accurate time is necessary for certificate validation and writing in batches
-  // Syncing progress and the time will be printed to Serial.
-  timeSync(TZ_INFO, NTP_SERVER1, NTP_SERVER2);
+    client.setConnectionParamsV1(INFLUXDB_URL, INFLUX_DB_NAME, INFLUXDB_USER, INFLUXDB_PASSWORD);
+    digitalWrite(26, LOW);
+    
+    // Accurate time is necessary for certificate validation and writing in batches
+    // Syncing progress and the time will be printed to Serial.
+    timeSync(TZ_INFO, NTP_SERVER1, NTP_SERVER2);
 
     if (client.validateConnection()) {
     Serial.print("Connected to InfluxDB: ");
     Serial.println(client.getServerUrl());
-  } else {
-    Serial.print("InfluxDB connection failed: ");
-    Serial.println(client.getLastErrorMessage());
-  }
-  client.setWriteOptions(WriteOptions().writePrecision(WRITE_PRECISION).batchSize(MAX_BATCH_SIZE).bufferSize(WRITE_BUFFER_SIZE));
-
-  //Temperature sensors
-  sensors.begin();
+    } else {
+      Serial.print("InfluxDB connection failed: ");
+      Serial.println(client.getLastErrorMessage());
+    }
+    client.setWriteOptions(WriteOptions().writePrecision(WRITE_PRECISION).batchSize(MAX_BATCH_SIZE).bufferSize(WRITE_BUFFER_SIZE));
   
-  Serial.print("Parasite power is: "); 
-  if (sensors.isParasitePowerMode()) Serial.println("ON");
-  else Serial.println("OFF");
-  
-  if (!sensors.getAddress(insideThermometer, 0)) Serial.println("Unable to find address for Device 0"); 
+    //Temperature sensors
+    sensors.begin();
+    
+    Serial.print("Parasite power is: "); 
+    if (sensors.isParasitePowerMode()) Serial.println("ON");
+    else Serial.println("OFF");
+    
+    if (!sensors.getAddress(insideThermometer, 0)) Serial.println("Unable to find address for Device 0"); 
 
-  Serial.print("Device 0 Address: ");
-  //printAddress(insideThermometer);
-  Serial.println();
-  
-  sensors.setResolution(insideThermometer, 12);
-  Serial.print("Device 0 Resolution: ");
-  Serial.print(sensors.getResolution(insideThermometer), DEC); 
-  Serial.println();
+    Serial.print("Device 0 Address: ");
+    //printAddress(insideThermometer);
+    Serial.println();
+    
+    sensors.setResolution(insideThermometer, 12);
+    Serial.print("Device 0 Resolution: ");
+    Serial.print(sensors.getResolution(insideThermometer), DEC); 
+    Serial.println();
 
-  dbgoutln("Starting Arduino BLE Client application...");
-  BLEDevice::init("");
-  // Retrieve a Scanner and set the callback we want to use to be informed when we
-  // have detected a new device.  Specify that we want active scanning and start the
-  // scan to run for 10 seconds.
-  BLEScan* pBLEScan = BLEDevice::getScan();
-  pBLEScan->setAdvertisedDeviceCallbacks(new MyAdvertisedDeviceCallbacks());
-  pBLEScan->setInterval(1349);
-  pBLEScan->setWindow(449);
-  pBLEScan->setActiveScan(true);
-  dbgoutln("BLE intensive scan for 10sec");
-  pBLEScan->start(10, false);
+    pointStatus.addTag("PatientID", "test");
 
 }
 
 void loop() {
-  if (iterations%10 != 0) {
+  if (iterations%100  != 0) {
     WiFi.disconnect();
   }
-  if (iterations%10 == 0) {
+  if (iterations%100 == 0) {
     wm.autoConnect(ssid, password);
   }
- 
+      // Sync time for batching once per hour
+  if (iterations++ >= 200) {
+    timeSync(TZ_INFO, NTP_SERVER1, NTP_SERVER2);
+    iterations = 0;
+  }
+  
   if(WiFi.status() == 3) {
     digitalWrite(14, HIGH);
   }
   else {
     digitalWrite(14, LOW);
   }
-  int bat = map(analogRead(35),1240 ,2252 , 0, 100); 
+  
+  int bat = analogRead(35)-182;
   
   // Read Temperature
-    sensors.requestTemperatures();
-    float tempC = sensors.getTempC(insideThermometer);
-    int tempSend = tempC;
+  sensors.requestTemperatures();
+  float tempC = sensors.getTempC(insideThermometer);
+
+  rssi = WiFi.RSSI();
     
   // If the flag "doConnect" is true then we have scanned for and found the desired
   // BLE Server (i.e. Oxymeter) with which we wish to connect.  Now we connect to it.  Once we are
@@ -313,24 +318,24 @@ void loop() {
     doConnect = false;
   }
 
-      // Sync time for batching once per hour
-    if (iterations++ >= 3600) {
-      timeSync(TZ_INFO, NTP_SERVER1, NTP_SERVER2);
-      iterations = 0;
-    }
-
   // If we are connected to a peer BLE Server, update the characteristic each time we are reached
   // with the current time since boot.
   if (connected) {
-    pointStatus.setTime(time(nullptr));
+        pointStatus.setTime(time(nullptr));
     if (oxygenConnected == true) {
       pointStatus.addField("oxygen", oxygen);
+      oxygenConnected = false;
     }
     if (bpmConnected == true){
       pointStatus.addField("bpm", bpm );
+      bpmConnected = false;
     }
-    pointStatus.addField("temperature", tempC);
+    if (0 <= tempC <= 50) {
+      pointStatus.addField("temperature", tempC);
+    }
     pointStatus.addField("batterie", bat);
+    pointStatus.addField("RSSI", rssi);
+   
     
     Serial.println(pointStatus.toLineProtocol());
     client.writePoint(pointStatus);
@@ -341,4 +346,5 @@ void loop() {
     BLEDevice::getScan()->start(0);  // this is just eample to start scan after disconnect (infinite scan !), most likely there is better way to do it in arduino
   }  
   
-  delay(2000);  //Delay half a second between loops/this delay ca
+  delay(2000);  //Delay half a second between loops/this delay can probably be removed
+}
