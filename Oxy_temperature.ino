@@ -4,7 +4,11 @@
 #include <DallasTemperature.h>
 #include "BLEDevice.h"
 #include "dbgout.h"
- 
+
+unsigned long previousMillis = 0;
+const long interval = 5000;    
+
+
 //WiFiManager setup
 WiFiManager wm;
 const char* ssid = "ESP32y";
@@ -24,7 +28,7 @@ InfluxDBClient client(INFLUXDB_URL, INFLUX_DB_NAME);
 #define NTP_SERVER2  "time.nis.gov"
 #define WRITE_PRECISION WritePrecision::S
 #define MAX_BATCH_SIZE 120
-#define WRITE_BUFFER_SIZE 100
+#define WRITE_BUFFER_SIZE 80
 
 //Temperature sensor setup
 OneWire oneWire(4);
@@ -277,70 +281,70 @@ void setup() {
 }
 
 void loop() {
-  if (iterations%120  != 0) {
-    WiFi.disconnect();
-  }
-  if (iterations%120 == 0) {
-    wm.autoConnect(ssid, password);
-  }
-      // Sync time for batching once per hour
-  if (iterations >= 240) {
-    timeSync(TZ_INFO, NTP_SERVER1, NTP_SERVER2);
-    iterations = 0;
-  }
-  iterations +=1 ;
-  
-  if(WiFi.status() == 3) {
-    digitalWrite(14, HIGH);
-  }
-  else {
-    digitalWrite(14, LOW);
-  }
-  
-  int bat = analogRead(35)-182;
-  
-  // Read Temperature
-  sensors.requestTemperatures();
-  float tempC = sensors.getTempC(insideThermometer);
+  unsigned long currentMillis = millis();
+  if (currentMillis - previousMillis >= interval) {
+    previousMillis = currentMillis;
 
-  rssi = WiFi.RSSI();
+    pointStatus.setTime(time(nullptr));
+    if (iterations%120  != 0) {
+      WiFi.disconnect();
+    }
+    if (iterations%120 == 0) {
+      wm.autoConnect(ssid, password);
+      rssi = WiFi.RSSI();
+      pointStatus.addField("RSSI", rssi);
+    }
+        // Sync time for batching once per hour
+    if (iterations >= 240) {
+      timeSync(TZ_INFO, NTP_SERVER1, NTP_SERVER2);
+      iterations = 0;
+    }
+    iterations +=1 ;
     
-  // If the flag "doConnect" is true then we have scanned for and found the desired
-  // BLE Server (i.e. Oxymeter) with which we wish to connect.  Now we connect to it.  Once we are
-  // connected we set the connected flag to be true.
-  if (doConnect == true) {
-    if (connectToServer()) {
-      dbgoutln("We are now connected to the BLE Server.");
-    } else {
-      dbgoutln("We have failed to connect to the server; there is nothin more we will do.");
+    if(WiFi.status() == 3) {
+      digitalWrite(14, HIGH);
     }
-    doConnect = false;
-  }
+    else {
+      digitalWrite(14, LOW);
+    }
+    
+    int bat = analogRead(35)-182;
+    
+    // Read Temperature
+    sensors.requestTemperatures();
+    float tempC = sensors.getTempC(insideThermometer);
 
-  // If we are connected to a peer BLE Server, update the characteristic each time we are reached
-  // with the current time since boot.
-  if (connected) {
-        pointStatus.setTime(time(nullptr));
-    if (oxyConnected == true) {
-      pointStatus.addField("oxygen", oxygen);
-      pointStatus.addField("bpm", bpm );
-      oxyConnected = false;
-    }
     if (tempC >=0 && tempC <= 50) {
-      pointStatus.addField("temperature", tempC);
-    }
+        pointStatus.addField("temperature", tempC);
+      }
     pointStatus.addField("batterie", bat);
-    pointStatus.addField("RSSI", rssi);
-   
-    
+    // If the flag "doConnect" is true then we have scanned for and found the desired
+    // BLE Server (i.e. Oxymeter) with which we wish to connect.  Now we connect to it.  Once we are
+    // connected we set the connected flag to be true.
+    if (doConnect == true) {
+      if (connectToServer()) {
+        dbgoutln("We are now connected to the BLE Server.");
+      } else {
+        dbgoutln("We have failed to connect to the server; there is nothin more we will do.");
+      }
+      doConnect = false;
+    }
+  
+    // If we are connected to a peer BLE Server, update the characteristic each time we are reached
+    // with the current time since boot.
+    if (connected) {
+      if (oxyConnected == true) {
+        pointStatus.addField("oxygen", oxygen);
+        pointStatus.addField("bpm", bpm );
+        oxyConnected = false;
+      }
+                
+    } else if (doScan) {
+      //not connected anymore --> infinite scan 
+      BLEDevice::getScan()->start(0);  // this is just eample to start scan after disconnect (infinite scan !), most likely there is better way to do it in arduino
+    }
     Serial.println(pointStatus.toLineProtocol());
     client.writePoint(pointStatus);
-    pointStatus.clearFields();
-              
-  } else if (doScan) {
-    //not connected anymore --> infinite scan 
-    BLEDevice::getScan()->start(0);  // this is just eample to start scan after disconnect (infinite scan !), most likely there is better way to do it in arduino
-  }  
-  
-  delay(2000);  //Delay half a second between loops/this delay can probably be removed
+    pointStatus.clearFields();     
+  }
 }
