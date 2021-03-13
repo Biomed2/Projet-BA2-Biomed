@@ -23,8 +23,8 @@ InfluxDBClient client(INFLUXDB_URL, INFLUX_DB_NAME);
 #define NTP_SERVER1  "pool.ntp.org"
 #define NTP_SERVER2  "time.nis.gov"
 #define WRITE_PRECISION WritePrecision::S
-#define MAX_BATCH_SIZE 100
-#define WRITE_BUFFER_SIZE 20
+#define MAX_BATCH_SIZE 120
+#define WRITE_BUFFER_SIZE 100
 
 //Temperature sensor setup
 OneWire oneWire(4);
@@ -54,8 +54,7 @@ static float oxygen;
 int rssi;
 int iterations = 0;
 
-static boolean oxygenConnected = false;
-static boolean bpmConnected = false;
+static boolean oxyConnected = false;
 static boolean doConnect = false;
 static boolean connected = false;
 static boolean doScan = false;
@@ -119,12 +118,11 @@ static void notifyCallback(
     case 18:
       spo2piCallback(pData[12],pData[14] / 10.0);
       oxygen = pData[12];
-      oxygenConnected = true;
+      oxyConnected = true;
       break;
     case 10:
       bpmCallback(pData[12]);
       bpm = pData[12];
-      bpmConnected = true;
       break;
     case 252:
       if (pData[2] == 2) laston = millis();
@@ -274,22 +272,23 @@ void setup() {
     Serial.print(sensors.getResolution(insideThermometer), DEC); 
     Serial.println();
 
-    pointStatus.addTag("PatientID", "test");
+    pointStatus.addTag("PatientID", "testproto2");
 
 }
 
 void loop() {
-  if (iterations%100  != 0) {
+  if (iterations%120  != 0) {
     WiFi.disconnect();
   }
-  if (iterations%100 == 0) {
+  if (iterations%120 == 0) {
     wm.autoConnect(ssid, password);
   }
       // Sync time for batching once per hour
-  if (iterations++ >= 200) {
+  if (iterations >= 240) {
     timeSync(TZ_INFO, NTP_SERVER1, NTP_SERVER2);
     iterations = 0;
   }
+  iterations +=1 ;
   
   if(WiFi.status() == 3) {
     digitalWrite(14, HIGH);
@@ -322,15 +321,12 @@ void loop() {
   // with the current time since boot.
   if (connected) {
         pointStatus.setTime(time(nullptr));
-    if (oxygenConnected == true) {
+    if (oxyConnected == true) {
       pointStatus.addField("oxygen", oxygen);
-      oxygenConnected = false;
-    }
-    if (bpmConnected == true){
       pointStatus.addField("bpm", bpm );
-      bpmConnected = false;
+      oxyConnected = false;
     }
-    if (0 <= tempC <= 50) {
+    if (tempC >=0 && tempC <= 50) {
       pointStatus.addField("temperature", tempC);
     }
     pointStatus.addField("batterie", bat);
