@@ -27,8 +27,8 @@ InfluxDBClient client(INFLUXDB_URL, INFLUX_DB_NAME);
 #define NTP_SERVER1  "pool.ntp.org"
 #define NTP_SERVER2  "time.nis.gov"
 #define WRITE_PRECISION WritePrecision::S
-#define MAX_BATCH_SIZE 120
-#define WRITE_BUFFER_SIZE 80
+#define MAX_BATCH_SIZE 84 
+#define WRITE_BUFFER_SIZE 168
 
 //Temperature sensor setup
 OneWire oneWire(4);
@@ -286,21 +286,22 @@ void loop() {
     previousMillis = currentMillis;
 
     pointStatus.setTime(time(nullptr));
-    if (iterations%120  != 0) {
+    if (iterations%84  != 0) {
       WiFi.disconnect();
     }
-    if (iterations%120 == 0) {
+    if (iterations%84 == 0) {
       wm.autoConnect(ssid, password);
       rssi = WiFi.RSSI();
       pointStatus.addField("RSSI", rssi);
+      if (!client.isBufferEmpty()) {
+        client.flushBuffer();
+      }
     }
-        // Sync time for batching once per hour
-    if (iterations >= 240) {
+    // Sync time for batching once per hour
+    if (iterations >= 840) {
       timeSync(TZ_INFO, NTP_SERVER1, NTP_SERVER2);
       iterations = 0;
     }
-    iterations +=1 ;
-    
     if(WiFi.status() == 3) {
       digitalWrite(14, HIGH);
     }
@@ -345,6 +346,7 @@ void loop() {
     }
     Serial.println(pointStatus.toLineProtocol());
     client.writePoint(pointStatus);
-    pointStatus.clearFields();     
+    pointStatus.clearFields();
+    iterations +=1 ;    
   }
 }
